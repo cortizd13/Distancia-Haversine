@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Distancia entre dos puntos de la Tierra</title>
+<style>
+  body { font-family: Arial, sans-serif; max-width: 860px; margin: 20px auto; padding: 0 16px; background: #f4f4f4; color: #222; }
+  h1 { margin-bottom: 0; }
+  .sub { margin-top: 4px; color: #666; }
+  .panel { background: #fff; border: 1px solid #ddd; border-radius: 8px; padding: 12px 16px; margin: 12px 0; }
+  .puntos { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; }
+  .punto h3 { margin: 0 0 8px; }
+  .punto.a h3 { color: #1e6fd9; }
+  .punto.b h3 { color: #d9481e; }
+  label { display: block; font-size: 13px; color: #555; margin-top: 6px; }
+  input, select { width: 100%; padding: 7px; font-size: 14px; box-sizing: border-box; }
+  button { padding: 9px 14px; font-size: 14px; cursor: pointer; margin: 4px 4px 4px 0; }
+  .error { color: #c62828; font-size: 13px; min-height: 16px; }
+  .resultados { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; }
+  .dato { background: #f7f7f7; border-radius: 6px; padding: 10px; }
+  .dato .et { font-size: 12px; color: #777; }
+  .dato .va { font-size: 20px; font-weight: bold; }
+  .dato.principal { background: #e8f1fd; }
+  .dato.principal .va { font-size: 28px; color: #1e4f99; }
+  canvas { width: 100%; border: 1px solid #ccc; border-radius: 6px; cursor: crosshair; background: #eaf4fb; }
+  .leyenda { font-size: 13px; color: #555; }
+  pre { background: #1e1e1e; color: #d4d4d4; padding: 12px; border-radius: 6px; overflow-x: auto; font-size: 13px; line-height: 1.5; }
+</style>
+</head>
+<body>
+<h1>Distancia entre dos puntos de la Tierra</h1>
+<p class="sub">Ley esférica de los cosenos, fórmula del haversine y método de Vincenty</p>
+
+<!-- ===== ENTRADA DE COORDENADAS ===== -->
+<div class="panel puntos">
+  <div class="punto a">
+    <h3>Punto A</h3>
+    <label>Ciudad predefinida</label>
+    <select id="presetA"></select>
+    <label>Latitud (−90 a 90, negativo = sur)</label>
+    <input id="latA" type="number" step="any">
+    <label>Longitud (−180 a 180, negativo = oeste)</label>
+    <input id="lonA" type="number" step="any">
+    <button id="miUbicacion">Usar mi ubicación</button>
+  </div>
+  <div class="punto b">
+    <h3>Punto B</h3>
+    <label>Ciudad predefinida</label>
+    <select id="presetB"></select>
+    <label>Latitud (−90 a 90, negativo = sur)</label>
+    <input id="latB" type="number" step="any">
+    <label>Longitud (−180 a 180, negativo = oeste)</label>
+    <input id="lonB" type="number" step="any">
+  </div>
+</div>
+<div class="panel">
+  <button id="calcular">Calcular distancia</button>
+  <button id="intercambiar">Intercambiar A y B</button>
+  <label style="display:inline">Radio de la esfera (km):</label>
+  <input id="radio" type="number" step="any" value="6371.0088" style="width:120px">
+  <div id="error" class="error"></div>
+</div>
+
+<!-- ===== RESULTADOS ===== -->
+<div class="panel">
+  <div class="resultados">
+    <div class="dato principal"><div class="et">Distancia (haversine)</div><div class="va" id="rHav">—</div></div>
+    <div class="dato"><div class="et">En millas / millas náuticas</div><div class="va" id="rMillas">—</div></div>
+    <div class="dato"><div class="et">Ley de los cosenos</div><div class="va" id="rCos">—</div></div>
+    <div class="dato"><div class="et">Vincenty (elipsoide WGS-84)</div><div class="va" id="rVin">—</div></div>
+    <div class="dato"><div class="et">Diferencia esfera vs. elipsoide</div><div class="va" id="rDif">—</div></div>
+    <div class="dato"><div class="et">Ángulo central σ</div><div class="va" id="rSigma">—</div></div>
+    <div class="dato"><div class="et">Rumbo inicial de A hacia B</div><div class="va" id="rRumbo">—</div></div>
+    <div class="dato"><div class="et">Punto medio de la ruta</div><div class="va" id="rMedio" style="font-size:16px">—</div></div>
+  </div>
+</div>
+
+<!-- ===== MAPA ===== -->
+<div class="panel">
+  <canvas id="mapa" width="1600" height="800"></canvas>
+  <p class="leyenda">
+    Haz clic en el mapa para mover el punto <b id="siguiente">A</b>.
+    <span style="color:#7b1fa2">━ Ruta más corta (círculo máximo)</span> ·
+    <span style="color:#888">┅ Línea recta en el mapa plano (no es la más corta)</span>
+  </p>
+</div>
+
+<!-- ===== CÁLCULO PASO A PASO ===== -->
+<div class="panel">
+  <h3>Cálculo paso a paso (haversine)</h3>
+  <pre id="pasos">Presiona «Calcular distancia».</pre>
+</div>
+
+<script>
+// ================== FUNCIONES GEODÉSICAS ==================
+const R_TIERRA = 6371.0088;          // km, radio medio de la Tierra (IUGG)
+const WGS84 = { a: 6378.137, f: 1 / 298.257223563 };   // elipsoide WGS-84 (km)
+
+const aRad = g => g * Math.PI / 180;
+const aGrados = r => r * 180 / Math.PI;
+
+// (1) Ley esférica de los cosenos
+function distanciaCosenos(lat1, lon1, lat2, lon2, R = R_TIERRA) {
+  const p1 = aRad(lat1), p2 = aRad(lat2), dl = aRad(lon2 - lon1);
+  let c = Math.sin(p1) * Math.sin(p2) + Math.cos(p1) * Math.cos(p2) * Math.cos(dl);
+  c = Math.min(1, Math.max(-1, c));          // evita errores de redondeo fuera de [-1, 1]
+  const sigma = Math.acos(c);                // ángulo central
+  return { sigma, d: R * sigma };
+}
+
+// (2) Fórmula del haversine
+function distanciaHaversine(lat1, lon1, lat2, lon2, R = R_TIERRA) {
+  const p1 = aRad(lat1), p2 = aRad(lat2);
+  const dp = p2 - p1, dl = aRad(lon2 - lon1);
+  const a = Math.sin(dp / 2) ** 2 + Math.cos(p1) * Math.cos(p2) * Math.sin(dl / 2) ** 2;
+  const sigma = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return { a, sigma, d: R * sigma };
+}
+
+// (3) Rumbo inicial (azimut) de A hacia B, en grados desde el norte
+function rumboInicial(lat1, lon1, lat2, lon2) {
+  const p1 = aRad(lat1), p2 = aRad(lat2), dl = aRad(lon2 - lon1);
+  const y = Math.sin(dl) * Math.cos(p2);
+  const x = Math.cos(p1) * Math.sin(p2) - Math.sin(p1) * Math.cos(p2) * Math.cos(dl);
+  return (aGrados(Math.atan2(y, x)) + 360) % 360;
+}
+
+// (4) Punto intermedio: fracción t (0 = A, 1 = B) sobre el círculo máximo
+function puntoIntermedio(lat1, lon1, lat2, lon2, t) {
+  const p1 = aRad(lat1), l1 = aRad(lon1), p2 = aRad(lat2), l2 = aRad(lon2);
+  const sigma = distanciaHaversine(lat1, lon1, lat2, lon2).sigma;
+  if (sigma === 0) return { lat: lat1, lon: lon1 };
+  const A = Math.sin((1 - t) * sigma) / Math.sin(sigma);
+  const B = Math.sin(t * sigma) / Math.sin(sigma);
+  const x = A * Math.cos(p1) * Math.cos(l1) + B * Math.cos(p2) * Math.cos(l2);
+  const y = A * Math.cos(p1) * Math.sin(l1) + B * Math.cos(p2) * Math.sin(l2);
+  const z = A * Math.sin(p1) + B * Math.sin(p2);
+  return { lat: aGrados(Math.atan2(z, Math.hypot(x, y))), lon: aGrados(Math.atan2(y, x)) };
+}
+
+// (5) Vincenty inverso sobre el elipsoide WGS-84 (referencia de alta precisión)
+function distanciaVincenty(lat1, lon1, lat2, lon2) {
+  const { a, f } = WGS84, b = a * (1 - f);
+  const L = aRad(lon2 - lon1);
+  const U1 = Math.atan((1 - f) * Math.tan(aRad(lat1)));
+  const U2 = Math.atan((1 - f) * Math.tan(aRad(lat2)));
+  const sU1 = Math.sin(U1), cU1 = Math.cos(U1), sU2 = Math.sin(U2), cU2 = Math.cos(U2);
+  let lambda = L, lambdaP, iter = 0, sS, cS, sigma, cos2a, c2sm;
+  do {
+    const sl = Math.sin(lambda), cl = Math.cos(lambda);
+    sS = Math.sqrt((cU2 * sl) ** 2 + (cU1 * sU2 - sU1 * cU2 * cl) ** 2);
+    if (sS === 0) return { d: 0, iter };
+    cS = sU1 * sU2 + cU1 * cU2 * cl;
+    sigma = Math.atan2(sS, cS);
+    const sa = cU1 * cU2 * sl / sS;
+    cos2a = 1 - sa * sa;
+    c2sm = cos2a !== 0 ? cS - 2 * sU1 * sU2 / cos2a : 0;
+    const C = f / 16 * cos2a * (4 + f * (4 - 3 * cos2a));
+    lambdaP = lambda;
+    lambda = L + (1 - C) * f * sa * (sigma + C * sS * (c2sm + C * cS * (-1 + 2 * c2sm * c2sm)));
+  } while (Math.abs(lambda - lambdaP) > 1e-12 && ++iter < 200);
+  if (iter >= 200) return { d: NaN, iter };          // no converge (puntos casi antípodas)
+  const u2 = cos2a * (a * a - b * b) / (b * b);
+  const A = 1 + u2 / 16384 * (4096 + u2 * (-768 + u2 * (320 - 175 * u2)));
+  const B = u2 / 1024 * (256 + u2 * (-128 + u2 * (74 - 47 * u2)));
+  const dS = B * sS * (c2sm + B / 4 * (cS * (-1 + 2 * c2sm * c2sm) - B / 6 * c2sm * (-3 + 4 * sS * sS) * (-3 + 4 * c2sm * c2sm)));
+  return { d: b * A * (sigma - dS), iter };
+}
+
+
+// ================== DATOS ==================
+const CIUDADES = {
+  'Barranquilla': [10.9685, -74.7813], 'Bogotá': [4.7110, -74.0721], 'Medellín': [6.2442, -75.5812],
+  'Cali': [3.4516, -76.5320], 'Cartagena': [10.3910, -75.4794], 'Santa Marta': [11.2408, -74.1990],
+  'Ciudad de México': [19.4326, -99.1332], 'Nueva York': [40.7128, -74.0060], 'Buenos Aires': [-34.6037, -58.3816],
+  'Madrid': [40.4168, -3.7038], 'Londres': [51.5074, -0.1278], 'Tokio': [35.6762, 139.6503],
+  'Sídney': [-33.8688, 151.2093], 'Polo Norte': [90, 0], 'Polo Sur': [-90, 0],
+};
+const $ = id => document.getElementById(id);
+
+// ================== VALIDACIÓN ==================
+function leerPunto(sufijo) {
+  const lat = parseFloat($('lat' + sufijo).value), lon = parseFloat($('lon' + sufijo).value);
+  if (isNaN(lat) || isNaN(lon)) throw new Error(`Escribe la latitud y la longitud del punto ${sufijo}.`);
+  if (lat < -90 || lat > 90) throw new Error(`La latitud de ${sufijo} debe estar entre −90 y 90.`);
+  if (lon < -180 || lon > 180) throw new Error(`La longitud de ${sufijo} debe estar entre −180 y 180.`);
+  return { lat, lon };
+}
+
+// ================== CÁLCULO PRINCIPAL ==================
+function calcular() {
+  $('error').textContent = '';
+  let A, B, R;
+  try {
+    A = leerPunto('A'); B = leerPunto('B');
+    R = parseFloat($('radio').value);
+    if (!(R > 0)) throw new Error('El radio debe ser un número positivo.');
+  } catch (e) { $('error').textContent = e.message; return; }
+
+  const hav = distanciaHaversine(A.lat, A.lon, B.lat, B.lon, R);
+  const cos = distanciaCosenos(A.lat, A.lon, B.lat, B.lon, R);
+  const vin = distanciaVincenty(A.lat, A.lon, B.lat, B.lon);
+  const rumbo = rumboInicial(A.lat, A.lon, B.lat, B.lon);
+  const medio = puntoIntermedio(A.lat, A.lon, B.lat, B.lon, 0.5);
+
+  $('rHav').textContent = fmtKm(hav.d);
+  $('rMillas').textContent = `${num(hav.d / 1.609344, 1)} mi / ${num(hav.d / 1.852, 1)} nmi`;
+  $('rCos').textContent = fmtKm(cos.d);
+  $('rVin').textContent = isNaN(vin.d) ? 'No converge' : fmtKm(vin.d);
+  $('rDif').textContent = isNaN(vin.d) || vin.d === 0 ? '—' : `${num((hav.d - vin.d) / vin.d * 100, 3)} %`;
+  $('rSigma').textContent = `${num(aGrados(hav.sigma), 4)}°`;
+  $('rRumbo').textContent = hav.d === 0 ? '—' : `${num(rumbo, 1)}° (${cardinal(rumbo)})`;
+  $('rMedio').textContent = `${num(medio.lat, 4)}°, ${num(medio.lon, 4)}°`;
+
+  mostrarPasos(A, B, R, hav);
+  dibujarMapa(A, B);
+}
+
+function mostrarPasos(A, B, R, hav) {
+  const p1 = aRad(A.lat), p2 = aRad(B.lat);
+  const dp = p2 - p1, dl = aRad(B.lon - A.lon);
+  const s1 = Math.sin(dp / 2) ** 2, s2 = Math.cos(p1) * Math.cos(p2) * Math.sin(dl / 2) ** 2;
+  $('pasos').textContent =
+`1) Grados → radianes (multiplicar por π/180)
+   φA = ${num(A.lat, 4)}° = ${num(p1, 6)} rad     λA = ${num(A.lon, 4)}°
+   φB = ${num(B.lat, 4)}° = ${num(p2, 6)} rad     λB = ${num(B.lon, 4)}°
+
+2) Diferencias
+   Δφ = φB − φA = ${num(dp, 6)} rad
+   Δλ = λB − λA = ${num(dl, 6)} rad
+
+3) a = sin²(Δφ/2) + cos φA · cos φB · sin²(Δλ/2)
+     = ${num(s1, 8)} + ${num(Math.cos(p1), 6)} · ${num(Math.cos(p2), 6)} · ${num(Math.sin(dl / 2) ** 2, 8)}
+     = ${num(hav.a, 8)}
+
+4) Ángulo central  σ = 2 · atan2(√a, √(1 − a))
+     = 2 · atan2(${num(Math.sqrt(hav.a), 6)}, ${num(Math.sqrt(1 - hav.a), 6)})
+     = ${num(hav.sigma, 6)} rad  (${num(aGrados(hav.sigma), 4)}°)
+
+5) Distancia  d = R · σ = ${num(R, 4)} km · ${num(hav.sigma, 6)}
+     = ${fmtKm(hav.d)}`;
+}
+
+// ================== MAPA (proyección equirectangular) ==================
+const canvas = $('mapa'), g = canvas.getContext('2d');
+const W = canvas.width, H = canvas.height;
+const aPixel = (lat, lon) => [(lon + 180) / 360 * W, (90 - lat) / 180 * H];
+const aCoord = (x, y) => [90 - y / H * 180, x / W * 360 - 180];
+
+function dibujarMapa(A, B) {
+  g.clearRect(0, 0, W, H);
+  // Cuadrícula cada 30°
+  g.strokeStyle = '#c3d8e8'; g.lineWidth = 1; g.font = '22px Arial'; g.fillStyle = '#7a93a8';
+  for (let lon = -180; lon <= 180; lon += 30) { const [x] = aPixel(0, lon); linea(x, 0, x, H); if (lon > -180 && lon < 180) g.fillText(lon + '°', x + 4, H - 8); }
+  for (let lat = -90; lat <= 90; lat += 30) { const [, y] = aPixel(lat, 0); linea(0, y, W, y); if (lat > -90 && lat < 90) g.fillText(lat + '°', 6, y - 6); }
+  g.strokeStyle = '#8fb3cf'; g.lineWidth = 2; linea(0, H / 2, W, H / 2);   // ecuador
+  linea(W / 2, 0, W / 2, H);                                                 // meridiano de Greenwich
+
+  // Línea recta en el mapa plano (punteada)
+  g.setLineDash([12, 10]); g.strokeStyle = '#888'; g.lineWidth = 3;
+  const [ax, ay] = aPixel(A.lat, A.lon), [bx, by] = aPixel(B.lat, B.lon);
+  linea(ax, ay, bx, by); g.setLineDash([]);
+
+  // Círculo máximo: 200 puntos intermedios; se corta la línea al cruzar el antimeridiano
+  g.strokeStyle = '#7b1fa2'; g.lineWidth = 4; g.beginPath();
+  let prevLon = null;
+  for (let i = 0; i <= 200; i++) {
+    const p = puntoIntermedio(A.lat, A.lon, B.lat, B.lon, i / 200);
+    const [x, y] = aPixel(p.lat, p.lon);
+    if (prevLon === null || Math.abs(p.lon - prevLon) > 180) g.moveTo(x, y); else g.lineTo(x, y);
+    prevLon = p.lon;
+  }
+  g.stroke();
+
+  marcador(ax, ay, '#1e6fd9', 'A'); marcador(bx, by, '#d9481e', 'B');
+}
+function linea(x1, y1, x2, y2) { g.beginPath(); g.moveTo(x1, y1); g.lineTo(x2, y2); g.stroke(); }
+function marcador(x, y, color, t) {
+  g.fillStyle = color; g.beginPath(); g.arc(x, y, 12, 0, 2 * Math.PI); g.fill();
+  g.fillStyle = '#fff'; g.font = 'bold 18px Arial'; g.fillText(t, x - 6, y + 6);
+}
+
+// Clic en el mapa: mueve A y B alternadamente
+let siguiente = 'A';
+canvas.addEventListener('click', (e) => {
+  const r = canvas.getBoundingClientRect();
+  const [lat, lon] = aCoord((e.clientX - r.left) / r.width * W, (e.clientY - r.top) / r.height * H);
+  $('lat' + siguiente).value = lat.toFixed(4);
+  $('lon' + siguiente).value = lon.toFixed(4);
+  $('preset' + siguiente).value = '';
+  siguiente = siguiente === 'A' ? 'B' : 'A';
+  $('siguiente').textContent = siguiente;
+  calcular();
+});
+
+// ================== UTILIDADES ==================
+function num(v, d) { return v.toLocaleString('es-CO', { minimumFractionDigits: d, maximumFractionDigits: d }); }
+function fmtKm(d) { return d < 1 ? `${num(d * 1000, 2)} m` : `${num(d, 2)} km`; }
+function cardinal(r) { return ['N', 'NE', 'E', 'SE', 'S', 'SO', 'O', 'NO'][Math.round(r / 45) % 8]; }
+
+// ================== INICIO ==================
+for (const s of ['A', 'B']) {
+  const sel = $('preset' + s);
+  sel.innerHTML = '<option value="">— personalizado —</option>' +
+    Object.keys(CIUDADES).map(c => `<option>${c}</option>`).join('');
+  sel.onchange = () => {
+    if (!sel.value) return;
+    [$('lat' + s).value, $('lon' + s).value] = CIUDADES[sel.value];
+    calcular();
+  };
+}
+$('presetA').value = 'Barranquilla'; $('presetB').value = 'Bogotá';
+[$('latA').value, $('lonA').value] = CIUDADES['Barranquilla'];
+[$('latB').value, $('lonB').value] = CIUDADES['Bogotá'];
+$('calcular').onclick = calcular;
+$('intercambiar').onclick = () => {
+  for (const k of ['lat', 'lon', 'preset']) [$(k + 'A').value, $(k + 'B').value] = [$(k + 'B').value, $(k + 'A').value];
+  calcular();
+};
+$('miUbicacion').onclick = () => {
+  if (!navigator.geolocation) { $('error').textContent = 'Tu navegador no permite obtener la ubicación.'; return; }
+  navigator.geolocation.getCurrentPosition(
+    pos => { $('latA').value = pos.coords.latitude.toFixed(4); $('lonA').value = pos.coords.longitude.toFixed(4); $('presetA').value = ''; calcular(); },
+    err => { $('error').textContent = 'No se pudo obtener la ubicación: ' + err.message; });
+};
+calcular();
+</script>
+</body>
+</html>
